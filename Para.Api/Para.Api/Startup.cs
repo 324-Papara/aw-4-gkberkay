@@ -2,20 +2,24 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json.Serialization;
 using AutoMapper;
+using Base;
+using Base.Interfaces;
+using Business;
 using FluentValidation.AspNetCore;
 using Hangfire;
 using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Papara.Data.Domain;
 using Para.Api.Middleware;
-using Para.Api.Service;
 using Para.Base;
-using Para.Base.Log;
 using Para.Base.Token;
 using Para.Bussiness;
 using Para.Bussiness.Cqrs;
+using Para.Bussiness.Job;
 using Para.Bussiness.Notification;
 using Para.Bussiness.Token;
 using Para.Bussiness.Validation;
@@ -66,12 +70,10 @@ public class Startup
 
         services.AddMediatR(typeof(CreateCustomerCommand).GetTypeInfo().Assembly);
 
-        services.AddTransient<CustomService1>();
-        services.AddScoped<CustomService2>();
-        services.AddSingleton<CustomService3>();
-
         services.AddScoped<ITokenService, TokenService>();
         services.AddSingleton<INotificationService, NotificationService>();
+        services.AddSingleton<IRabbitMqService, RabbitMqService>();
+        services.AddTransient<EmailProcessorJob>();
 
         services.AddAuthentication(x =>
         {
@@ -129,15 +131,11 @@ public class Startup
             opt.ConfigurationOptions = redisConfig;
             opt.InstanceName = Configuration["Redis:InstanceName"];
         });
-        
-        
-        services.AddHangfire(configuration => configuration
-            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-            .UseSimpleAssemblyNameTypeSerializer()
-            .UseRecommendedSerializerSettings()
-            .UseSqlServerStorage(Configuration.GetConnectionString("HangfireConnection")));
+
+
+        services.AddHangfire(x => x.UseSqlServerStorage(Configuration.GetConnectionString("HangfireConnection")));
         services.AddHangfireServer();
-        
+
 
         services.AddScoped<ISessionContext>(provider =>
         {
@@ -149,7 +147,7 @@ public class Startup
         });
     }
 
-    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, IServiceProvider serviceProvider, IRecurringJobManager recurringJobManager)
     {
         if (env.IsDevelopment())
         {
@@ -172,47 +170,18 @@ public class Startup
         app.UseMiddleware<RequestLoggingMiddleware>(requestResponseHandler);
 
         app.UseHangfireDashboard();
+        app.UseHangfireServer();
 
         app.UseHttpsRedirection();
+        app.UseStaticFiles();
         app.UseAuthentication();
         app.UseRouting();
         app.UseAuthorization();
         app.UseEndpoints(endpoints => { endpoints.MapControllers(); });
 
-        app.Use((context, next) =>
-        {
-            if (!string.IsNullOrEmpty(context.Request.Path) && context.Request.Path.Value.Contains("favicon"))
-            {
-                return next();
-            }
+        var emailProcessorJob = serviceProvider.GetService<EmailProcessorJob>();
+        recurringJobManager.AddOrUpdate("process-email-queue", () => emailProcessorJob.ProcessEmailQueue(), "*/5 * * * * *");
 
-            var service1 = context.RequestServices.GetRequiredService<CustomService1>();
-            var service2 = context.RequestServices.GetRequiredService<CustomService2>();
-            var service3 = context.RequestServices.GetRequiredService<CustomService3>();
 
-            service1.Counter++;
-            service2.Counter++;
-            service3.Counter++;
-
-            return next();
-        });
-
-        app.Run(async context =>
-        {
-            var service1 = context.RequestServices.GetRequiredService<CustomService1>();
-            var service2 = context.RequestServices.GetRequiredService<CustomService2>();
-            var service3 = context.RequestServices.GetRequiredService<CustomService3>();
-
-            if (!string.IsNullOrEmpty(context.Request.Path) && !context.Request.Path.Value.Contains("favicon"))
-            {
-                service1.Counter++;
-                service2.Counter++;
-                service3.Counter++;
-            }
-
-            await context.Response.WriteAsync($"Service1 : {service1.Counter}\n");
-            await context.Response.WriteAsync($"Service2 : {service2.Counter}\n");
-            await context.Response.WriteAsync($"Service3 : {service3.Counter}\n");
-        });
     }
 }

@@ -1,5 +1,5 @@
 using Microsoft.IO;
-using Para.Base.Log;
+using Papara.Data.Domain;
 using Serilog;
 
 namespace Para.Api.Middleware;
